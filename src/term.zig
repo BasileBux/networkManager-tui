@@ -22,6 +22,12 @@ pub const TermContext = struct {
     tty_file: std.fs.File,
     input_buffer: [10]u8 = undefined,
     input_len: usize = 0,
+    win_size: WinSize,
+
+    pub const WinSize = struct {
+        rows: u32,
+        cols: u32,
+    };
 
     pub fn init() !TermContext {
         const tty_file = try std.fs.openFileAbsolute("/dev/tty", .{ .mode = .read_write });
@@ -49,12 +55,15 @@ pub const TermContext = struct {
         try stdout.print("\x1B[?25l", .{}); // Hide cursor
         try stdout.print("\x1B[H", .{}); // Put cursor at position 0,0
 
-        return TermContext{
+        var ctx = TermContext{
             .stdout = stdout,
             .stdin = tty_file.reader(),
             .original_state = old_termios,
             .tty_file = tty_file,
+            .win_size = WinSize{ .rows = 0, .cols = 0 },
         };
+        ctx.getTermSize();
+        return ctx;
     }
 
     pub fn deinit(self: TermContext) void {
@@ -65,10 +74,22 @@ pub const TermContext = struct {
         self.stdout.print("Exited program cleanly\n", .{}) catch {};
     }
 
+    pub fn getTermSize(self: *TermContext) void {
+        const winsize = linux.winsize{
+            .ws_row = 0,
+            .ws_col = 0,
+            .ws_xpixel = 0,
+            .ws_ypixel = 0,
+        };
+        _ = linux.ioctl(self.tty_file.handle, linux.T.IOCGWINSZ, @intFromPtr(&winsize));
+        self.win_size.rows = winsize.ws_row;
+        self.win_size.cols = winsize.ws_col;
+    }
+
     pub fn getInput(self: *TermContext) !Input {
         if (self.input_len == 0) {
             const n = try self.stdin.read(self.input_buffer[0..]);
-            if (n == 0) return Input{ .escape = null, .utf8_input = null, .utf8_size = null };
+            if (n == 0) return Input{ .control = null, .utf8_input = null, .utf8_size = null };
             self.input_len = n;
         }
         const bytes = self.input_buffer[0..self.input_len];
@@ -83,16 +104,14 @@ pub const TermContext = struct {
                             is_sequence = true;
                             self.consume_bytes(3);
                             return switch (seq[1]) {
-                                'A' => Input{ .escape = ControlKeys.Up, .utf8_input = null, .utf8_size = null },
-                                'B' => Input{ .escape = ControlKeys.Down, .utf8_input = null, .utf8_size = null },
-                                'C' => Input{ .escape = ControlKeys.Right, .utf8_input = null, .utf8_size = null },
-                                'D' => Input{ .escape = ControlKeys.Left, .utf8_input = null, .utf8_size = null },
+                                'A' => Input{ .control = ControlKeys.Up, .utf8_input = null, .utf8_size = null },
+                                'B' => Input{ .control = ControlKeys.Down, .utf8_input = null, .utf8_size = null },
+                                'C' => Input{ .control = ControlKeys.Right, .utf8_input = null, .utf8_size = null },
+                                'D' => Input{ .control = ControlKeys.Left, .utf8_input = null, .utf8_size = null },
                                 else => unreachable,
                             };
                         },
-                        else => {
-                            std.debug.print("Unknown escape sequence was: {X}\n", .{bytes});
-                        },
+                        else => {},
                     }
                 }
             }
@@ -100,10 +119,10 @@ pub const TermContext = struct {
             if (!is_sequence) {
                 if (self.input_len == 1) {
                     self.consume_bytes(1);
-                    return Input{ .escape = ControlKeys.Escape, .utf8_input = null, .utf8_size = null };
+                    return Input{ .control = ControlKeys.Escape, .utf8_input = null, .utf8_size = null };
                 }
                 self.consume_bytes(self.input_len);
-                return Input{ .escape = null, .utf8_input = null, .utf8_size = null };
+                return Input{ .control = null, .utf8_input = null, .utf8_size = null };
             }
         }
 
@@ -116,7 +135,7 @@ pub const TermContext = struct {
             utf8_input[utf8_size] = c;
             utf8_size += 1;
         }
-        return Input{ .escape = null, .utf8_input = utf8_input, .utf8_size = utf8_size };
+        return Input{ .control = null, .utf8_input = utf8_input, .utf8_size = utf8_size };
     }
 
     // Utils ----------------------------------------------------------------------------
@@ -138,7 +157,7 @@ pub const TermContext = struct {
 };
 
 pub const Input = struct {
-    escape: ?ControlKeys,
+    control: ?ControlKeys,
     utf8_input: ?[4]u8,
     utf8_size: ?u8,
 };
