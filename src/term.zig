@@ -62,28 +62,31 @@ pub const TermContext = struct {
             .tty_file = tty_file,
             .win_size = WinSize{ .rows = 0, .cols = 0 },
         };
-        ctx.getTermSize();
+        try ctx.getTermSize();
         return ctx;
     }
 
     pub fn deinit(self: TermContext) void {
         _ = linux.tcsetattr(self.tty_file.handle, linux.TCSA.NOW, &self.original_state);
         self.tty_file.close();
-        self.escape_sequence("[?25h");
-        self.escape_sequence("[?1049l");
+        self.stdout.print("\x1B[?25h", .{}) catch {};
+        self.stdout.print("\x1B[?1049l", .{}) catch {};
         self.stdout.print("Exited program cleanly\n", .{}) catch {};
     }
 
-    pub fn getTermSize(self: *TermContext) void {
-        const winsize = linux.winsize{
-            .ws_row = 0,
-            .ws_col = 0,
-            .ws_xpixel = 0,
-            .ws_ypixel = 0,
-        };
-        _ = linux.ioctl(self.tty_file.handle, linux.T.IOCGWINSZ, @intFromPtr(&winsize));
-        self.win_size.rows = winsize.ws_row;
-        self.win_size.cols = winsize.ws_col;
+    const Winsize = extern struct {
+        ws_row: u16,
+        ws_col: u16,
+        ws_xpixel: u16,
+        ws_ypixel: u16,
+    };
+
+    pub fn getTermSize(self: *TermContext) !void {
+        var ws: Winsize = undefined;
+        _ = linux.ioctl(self.tty_file.handle, linux.T.IOCGWINSZ, @intFromPtr(&ws));
+
+        self.win_size.rows = ws.ws_row;
+        self.win_size.cols = ws.ws_col;
     }
 
     pub fn getInput(self: *TermContext) !Input {
@@ -136,14 +139,6 @@ pub const TermContext = struct {
             utf8_size += 1;
         }
         return Input{ .control = null, .utf8_input = utf8_input, .utf8_size = utf8_size };
-    }
-
-    // Utils ----------------------------------------------------------------------------
-
-    fn escape_sequence(self: TermContext, sequence: []const u8) void {
-        self.stdout.print("\x1B{s}", .{sequence}) catch |err| {
-            std.log.err("Failed to send escape sequence: {s}", .{@errorName(err)});
-        };
     }
 
     fn consume_bytes(self: *TermContext, n: usize) void {

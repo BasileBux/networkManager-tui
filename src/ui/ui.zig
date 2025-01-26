@@ -1,5 +1,6 @@
 const std = @import("std");
-const term = @import("term.zig");
+const term = @import("../term.zig");
+const current_conn = @import("current_connexion.zig");
 
 // Definition of my UI:
 // - 3 vertically stacked panes
@@ -19,9 +20,11 @@ fn handleSigint(_: c_int) callconv(.C) void {
 }
 
 pub const Ui = struct {
-    ctx: term.TermContext,
+    ctx: *term.TermContext,
     selected_pane: Panes,
+    current_connexion: current_conn.CurrentConnexion,
     exit_sig: bool,
+    update: bool,
 
     pub const Panes = enum {
         CurrentConnexion,
@@ -29,7 +32,7 @@ pub const Ui = struct {
         ScannedNetworks,
     };
 
-    pub fn init(ctx: term.TermContext) Ui {
+    pub fn init(ctx: *term.TermContext) Ui {
         // Signal handling
         const sigint_act = std.os.linux.Sigaction{
             .handler = .{ .handler = handleSigint },
@@ -48,6 +51,8 @@ pub const Ui = struct {
             .ctx = ctx,
             .selected_pane = Panes.CurrentConnexion,
             .exit_sig = false,
+            .current_connexion = current_conn.CurrentConnexion.init(ctx),
+            .update = true,
         };
     }
 
@@ -61,37 +66,30 @@ pub const Ui = struct {
             }
             if (window_resized.load(.seq_cst)) {
                 window_resized.store(false, .seq_cst);
-                self.ctx.getTermSize();
-                try self.ctx.stdout.print("Received SIGWINCH\n", .{});
+                try self.ctx.getTermSize();
+                try self.ctx.stdout.print("\x1b[2J\x1b[H", .{});
+                std.debug.print("SIZE CHANGED: {d} X {d}\n", .{ self.ctx.win_size.rows, self.ctx.win_size.cols });
+                self.update = true;
             }
 
             const in: term.Input = self.ctx.getInput() catch {
                 break;
             };
-            if (in.control) |control_input| {
-                try printControl(control_input, self.ctx);
+            if (in.control != null) {
+                self.update = true;
             }
             if (in.utf8_input) |value| {
-                try self.ctx.stdout.print("UTF-8 captured value = {s}\n", .{value});
+                self.update = true;
                 if (term.utf8_array_equal(value, term.utf8_code_point_to_array('q'))) {
                     self.exit_sig = true;
                     break;
                 }
             }
+
+            if (self.update) {
+                self.current_connexion.render();
+            }
+            self.update = false;
         }
     }
 };
-
-fn printControl(input: term.ControlKeys, ctx: term.TermContext) !void {
-    const input_str = switch (input) {
-        .Up => "↑ (UP)",
-        .Down => "↓ (DOWN)",
-        .Left => "← (LEFT)",
-        .Right => "→ (RIGHT)",
-        .Enter => "↵ (ENTER)",
-        .Space => "␣ (SPACE)",
-        .Escape => "ESC (ESCAPE)",
-    };
-
-    try ctx.stdout.print("Input: {s}\n", .{input_str});
-}
